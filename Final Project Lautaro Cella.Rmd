@@ -1,0 +1,358 @@
+---
+title: "Final Project"
+author: "Lautaro Cella"
+date: "6/1/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r include= FALSE}
+library(tidyverse)
+library(rvest)
+library(stringr)
+library(purrr)
+library(lubridate)
+library(pdftools)
+
+require(quanteda)
+require(quanteda.textmodels)
+require(quanteda.textstats)
+require(quanteda.textplots)
+require(quanteda.corpora)
+
+require(readtext)
+require(devtools)
+require(ggplot2) # For plotting word frequencies
+require(googleLanguageR)
+library(stm)
+library(stopwords)
+```
+
+## Brief substantive background / goal
+
+The Chilean party system has been highly stable since the country’s democratization in 1990 (Valenzuela et al. 2018). It has been ordered around two coalitions that were formed to support or oppose dictator Augusto Pinochet’s continued rule in the 1988 referendum. Both coalitions had ideological and programmatic tendencies: the Concertacion on the center-left, and the Alianza on the center-right. However, since massive protests erupted in the country in 2019 and a referendum was called to reform the Pinochet-sanctioned Constitution, both coalitions have lost most of its support. In 2020, independents with no partisan affiliations won the most seats in the Constitutional Assembly. In the 2021 presidential election, for the first time since democratization, the two candidates who received the most votes did not belong to the center-left or center-right coalition. 
+
+The literature predicts partisan identification to weaken when ideological polarization is low and coalitions become indistinguishable from one another (Lupu 2016). In this project, I will gather descriptive evidence to preliminary evaluate whether this hypothesis applies to the Chilean case. My expectation is that it does not. Center-right and center-left speeches will be different in ideological terms. I do not causally test the hypothesis since I only focus on ideology and do not look at partisanship.
+
+I will analyze State of the Union speeches from Chilean Presidents between 1990 and 2021. Are speeches from center-left and center-right Presidents different in ideological terms? What words are associated with each coalition?
+
+I will use Wordfish, an unsupervised learning method, to discover words that distinguish locations on a political spectrum. A party's position in the spectrum is assumed to affect the rate at which words are used in texts. I assume that State of the Union speeches capture positions on an ideological dimension. This is a justifiable assumption given the nature of the Chilean party system and the use of Wordfish to study State of the Union speeches in other countries. 
+
+Note: the Rmd. version of this file includes all my code, which I did not include in the PDF version.
+
+## Collecting data
+
+First, I web scraped the website of the Chilean Congress to gather every State of the Union speech from 1990 to 2021. I used selector gadget to identify the date, the speaker, and the link with the speech. The speeches were in PDF format, so I used the function pdf_text to read them.
+
+PDF text extraction was challenging. Luckily, most texts looked fine, they just needed to be cleaned. I realized that they had a lot of "/n/n" and "/n/nexampleword". Besides, the function failed to read the PDFs from 1996 and 1997. The quality of these two PDFs was very poor.
+
+```{r include= FALSE}
+main <- read_html("https://www.bcn.cl/historiapolitica/corporaciones/cuentas_publicas/detalle?tipo=presidentes")
+```
+
+```{r include= FALSE}
+# I get the URLs of the speeches
+url <- html_nodes(main, ".rspkr_dr_added") %>% 
+  html_attr("href")
+
+# Only keep speeches between 1990 and 2021
+url <- url[1:32]
+```
+
+```{r include= FALSE}
+# I get the date of the speeches
+date <- html_nodes(main, ".rspkr_dr_added") %>% 
+  html_text()
+
+# I get the year of the speeches
+date <- dmy(date)
+year <- year(date)
+
+# Only keep years between 1990 and 2021
+year <- year[1:32]
+```
+
+```{r include= FALSE}
+# Store text from all speeches 
+speeches <- lapply(url, pdftools::pdf_text)
+```
+
+## Cleaning / pre-processing data
+
+The pdf_text function gave me a list of lists as an output, so I had to transform this element. I constructed a data frame with the text and document level variables (year, president, coalition). Using the data frame, I created a corpus with a meaningful identifier for each document.
+
+One challenge was that the texts contained lots of "/n/nexampleword". I had to get rid of this using regular expressions. If I tried to delete this with the token function, I would end up with the letter "n" before many words "nexampleword" or "npresident". 
+
+I dropped documents from 1996 and 1997 because they were empty. I could not find the documents elsewhere. I also discovered that the document from 2010 was wrong, as the link contained a wrong PDF. It was not a State of the Union speech. Thus, I corrected this mistake and uploaded the right document, which was available online elsewhere. 
+
+I decided to keep the text in Spanish. All the pre-processing steps worked in Spanish. However, I noticed that stemming works worse in Spanish than in English. 
+
+I tokenized the text to unigrams. I removed punctuation, numbers, and symbols. I converted all characters to lowercase. I removed stop words in Spanish. I "stemmed" words. Then, I created a document term matrix.
+
+I got rid of words that don't appear in 20% of documents. This is an important decision because I employ Wordfish and I only have speeches from one coalition at a given year. If the relevant political issues change across time and new vocabulary appears in year t+1, then this vocabulary will differentiate texts at year t and year t+1. So, I may pick up a policy agenda shift in texts, when I am interested in coalition ideological positions. By only keeping words that are mentioned in 20% of speeches, I am keeping words relevant enough to be mentioned over time by either one or both coalitions.
+
+I plotted a word cloud with top words. After looking at it, I removed additional Spanish stop words. I also removed words that are too frequent and do not differentiate ideology among coalitions (Chile, law, government, president, etc.).
+
+After all pre-processing steps, I was left with 30 documents and 4037 words.
+
+```{r include= FALSE}
+# I have a list of sublists. Each sublist corresponds to a a State of the Union speech
+# Each page of the speech is an element of the sublist.
+# I create a list, where each element is a full state of the union speech
+speech <- list()
+u <- 1:32
+
+for(n in u) {
+speech[n] <- as.character(speeches[n])}
+```
+
+```{r include= FALSE}
+# I get rid of //n now. It is simpler
+for(n in u) {
+speech[n] <- str_replace_all(speech[n], "(\\\\n)", " ")}
+```
+
+```{r include= FALSE}
+# Create data frame
+text <- unlist(speech)
+
+data_frame <- data.frame(year, text)
+
+data_frame$president <- c("Pinera", "Pinera", "Pinera", "Pinera",
+                          "Bachelet", "Bachelet", "Bachelet", "Bachelet",
+                          "Pinera", "Pinera", "Pinera", "Pinera",
+                         "Bachelet", "Bachelet", "Bachelet", "Bachelet",
+                         "Lagos","Lagos","Lagos","Lagos",
+                         "Frei","Frei","Frei","Frei", "Frei", "Frei",
+                         "Aylwin","Aylwin","Aylwin","Aylwin", "Aylwin", "Aylwin")
+
+data_frame$coalition <- c(
+  "Alianza",  "Alianza",  "Alianza",  "Alianza", 
+  "Concertacion","Concertacion","Concertacion","Concertacion",
+   "Alianza",  "Alianza",  "Alianza",  "Alianza",     
+  "Concertacion","Concertacion","Concertacion","Concertacion",
+  "Concertacion","Concertacion","Concertacion","Concertacion",
+  "Concertacion","Concertacion","Concertacion","Concertacion","Concertacion","Concertacion",
+  "Concertacion","Concertacion","Concertacion","Concertacion","Concertacion","Concertacion")                    
+```
+
+```{r include= FALSE}
+# I get rid of documents from 1996 and 1997 because they were not read properly.
+data_frame$text[25]
+data_frame$text[26]
+
+# Filter them out
+data_frame <- data_frame %>%
+  filter(year!=1996 & year!=1997)
+```
+
+```{r include= FALSE, warning=F}
+# The website has the wrong file for pinera 2010 (text 12). I replace it.
+pinera2010 <- pdftools::pdf_text("https://www.camara.cl/camara/doc/archivo_historico/21mayo_2010.pdf")
+
+pinera2010<- list(pinera2010)
+
+pinera2010 <- as.character(pinera2010[1])
+
+pinera2010 <- str_replace_all(pinera2010, "(\\n)", " ")
+
+pinera2010
+
+data_frame$text[12] <- pinera2010
+```
+
+```{r include= FALSE}
+# Create a corpus
+corp_inaug <- corpus(data_frame, text_field = "text")
+summary(corp_inaug)
+```
+
+```{r include= FALSE}
+# Get corpus identifier
+docid <- str_c(data_frame$president, 
+               data_frame$year,  sep = " ")
+
+docnames(corp_inaug) <- docid
+summary(corp_inaug)
+```
+
+```{r include= FALSE}
+# Pre processing
+toks_inaug <- corp_inaug %>% 
+  tokens(split_hyphens = T, # split hypens
+         remove_punct = TRUE, # remove punctuation
+         remove_numbers = TRUE, # remove numbers
+         remove_symbols = TRUE)  %>% # remove symbols
+  tokens_remove(c("c", "n")) %>% # remove words "c" and "n"
+  tokens_tolower(keep_acronyms = F) %>% # make lowercase
+  tokens_remove(pattern = stopwords("es")) %>% # remove stopwords spanish
+  tokens_wordstem() # stemming
+
+head(toks_inaug)
+```
+
+```{r include= FALSE}
+# Make document term matrix
+dfm_inaug <- dfm(toks_inaug)
+head(dfm_inaug)
+
+# Most common words
+topfeatures(dfm_inaug)
+```
+
+```{r include= FALSE}
+# Get rid of words that don't appear in 20% of documents
+dfm_inaug_freq <- dfm_trim(dfm_inaug, 
+                         min_docfreq = .2,
+                         docfreq_type = "prop")# Get rid of words that don't appear in 20% of documents
+dfm_inaug_freq <- dfm_trim(dfm_inaug, 
+                         min_docfreq = .2,
+                         docfreq_type = "prop")
+
+# Sparsity
+sparsity(dfm_inaug)
+sparsity(dfm_inaug_freq)
+```
+
+```{r include= FALSE}
+# Word cloud with top words
+textplot_wordcloud(dfm_inaug_freq, max_words=40)
+```
+
+```{r include= FALSE}
+# Get rid of other stop words and words too frequent with no meaning (law, government, etc)
+toks_inaug <- toks_inaug %>% 
+  tokens_remove(c("chile", "paí", "mil", "gobierno", "hoy", "año", "ley", "nacion", "persona", "millon", "ministerio", "proyecto", "nacional", "ello", "cada", "ahora", "aquí", "aplauso", "quiero", "queremo", "chileno", "chilena", "chilenos", "chilenas", "ademá", "ser", "dos", "mejor", "así", "congreso", "hace", "pued", "decir", "febrero", "sólo", "toda", "todo", "debemo", "capac", "total", "información", "b", "c", "n", "d", "entonc", "parlamento", "hacer", "realidad", "podemo", "tarea", "hecho", "vez", "allí", "cómo", "pobl", "trabajará", "f", "mm", "sector", "actividad", "señor", "fondo", "querido", "solo","presidencial_2012", "indd", "manera", "adicionalment", "ciento", "dent", "proceso", "us", "estudio", "partir", "finalment", "base", "forma", "modo"))
+
+dfm_inaug <- dfm(toks_inaug)
+
+# Get rid of words that don't appear in 20% of documents
+dfm_inaug_freq <- dfm_trim(dfm_inaug, 
+                         min_docfreq = .2,
+                         docfreq_type = "prop")
+```
+
+```{r include= FALSE}
+# Word cloud with top words
+textplot_wordcloud(dfm_inaug_freq, max_words=40)
+```
+
+```{r include= FALSE}
+# Number of documents
+ndoc(dfm_inaug_freq)
+# Number of features
+nfeat(dfm_inaug_freq)
+```
+
+## Analysis and visualization
+
+### Distinctive Words
+
+Using textstat_keyness(), I compared frequencies of words between center-left and center-right speeches. 
+
+```{r warning=F, include= FALSE}
+# Word cloud comparison
+dfm_inaug_freq %>%
+    dfm_group(groups = coalition) %>%
+    textplot_wordcloud(comparison = TRUE)
+```
+
+
+```{r include= FALSE}
+# Keyness analysis
+dfm_grouped <- dfm_group(dfm_inaug_freq, groups= coalition)
+head(dfm_grouped)
+key <-textstat_keyness(dfm_grouped, target="Concertacion")
+head(key)
+tail(key)
+textplot_keyness(key)
+```
+
+```{r, fig.width=11,fig.height=5}
+textplot_keyness(key)
+```
+
+The center-left uses more words related to liberal economic development (market, company, US dollars, cooperation), and possibly university reform. The center-right uses more words related to family values (father, son, family), and narcotraffic.
+
+The center-left uses more words related to democracy, probably because it governed during first years of democracy. The center-right uses "earthquake" more since it was in power after the 2010 earthquake. 
+
+### Ideological Scaling: Wordfish
+
+Wordfish is an unsupervised one-dimensional text scaling method that estimates the positions of documents solely based on the observed word frequencies. Reference texts are not required. It assumes the speaker has a position in a low-dimensional political space, which leads to the rate at which words are used. Word usage is independent of other words, drawn from Poisson distribution.
+
+Thera are four parameters: word fixed effects (psi), word weigths (beta), document fixed effects (alpha), and document positions (theta).
+
+```{r}
+# I force center-left Bachelet 2014 to have a smaller score than  center-right Pinera 2013
+tmod_wf <- textmodel_wordfish(dfm_inaug_freq, dir = c(8, 9), tol = c(1e-06, 1e-08))
+```
+
+The theta scores estimate the ideological position of a text. I plotted the theta scores by political coalition of the speaker. The center-right texts are always to the right of the center-left texts.
+
+I notice there is a time trend, with speeches moving to the right with time. I believe this may be because of variation in policy issues discussed, even though I got rid of words that don't appear in 20% of documents. The literature does not suggest that President Aylwin was more of a leftist than President Bachelet. In spite of this, I believe Wordfish captures an ideological difference between speeches and not just different word usage across time. 
+
+```{r, warningg=F, fig.width=11,fig.height=5}
+textplot_scale1d(tmod_wf, groups = dfm_inaug_freq$coalition)
+```
+
+```{r include= FALSE}
+plot2 <- ggplot(mapping = aes(y = tmod_wf$theta, x = dfm_inaug_freq$coalition, color=dfm_inaug_freq$coalition)) + geom_point() +
+  labs(x = "Coalition", y = "Wordfish theta") + guides(col = guide_legend(title = "Coalition"))
+```
+
+```{r, fig.width=11,fig.height=5}
+plot2
+```
+
+I also plotted the scores between 2006 and 2021, to show that scores are not completely determined by the time trend. This period includes two mandates by center-left Michelle Bachelet and two mandates by center-right Sebastian Pinera. I am holding issues more or less constant by restricting the time period. The plot shows that there are substantive differences in ideology, identified by words usage. The center-left President always has a lower score than the center-right one. 
+
+```{r include= FALSE}
+plot3 <- ggplot(mapping = aes(y = tmod_wf$theta, x = dfm_inaug_freq$year, color=dfm_inaug_freq$coalition)) + geom_point(size=3) +
+  labs(x = "Year", y = "Wordfish theta") + guides(col = guide_legend(title = "Coalition"))+
+   xlim(2006, 2021)+ ylim(0,1.5)
+```
+
+```{r, warning=F, fig.width=11,fig.height=5}
+plot3
+```
+
+Finally, I plot the estimated word positions and highlight certain features. The beta coefficient measures the importance of a word in discriminating the underlying position. Words with a high absolute value discriminate well. The psi coefficient is a word-fixed effects. Words with a higher value are more common.
+
+```{r include= FALSE}
+plot4<- textplot_scale1d(tmod_wf, margin = "features", 
+                 highlighted = c("narcotraficant", "comisaría", "vacuna", "terremoto", "araucanía", "bendiga"), highlighted_color = "red")
+```
+
+```{r include= FALSE}
+plot4<- textplot_scale1d(tmod_wf, margin = "features", 
+                 highlighted = c("narcotraficant", "comisaría", "vacuna", "terremoto", "araucanía", "bendiga", "proteccionista", "constitucional", "consenso", "representatividad"), highlighted_color = c("red", "red", "red", "red", "red", "red", "blue", "blue", "blue", "blue"))
+```
+
+```{r, fig.width=11,fig.height=5}
+plot4
+```
+
+```{r include= FALSE}
+# Words with high beta
+beta <- tmod_wf$beta
+names(beta) <- tmod_wf$features
+
+cat(names(beta[order(beta, decreasing = T)][1:30]))
+
+cat(names(beta[order(beta, decreasing = F)][1:70]))
+```
+
+The center-right uses words related to security (narcotraffic, police station) and the indigenous conflict in the South (Araucania). It also uses the word "bless", usually in the context of "God bless Chile". The more secular center-left does not use this phrase. The center-left uses words related to the Constitution (potentially referring to a constitutional reform) and economic proteccionism. 
+
+Finally, the center-right uses words related to the pandemic (vaccine) and earthquake. This is probably because it governed during the pandemic and post the 2010 earthquake. The center-left uses words related to democratization (consensus, reconciliation). This could be because it governed during that time.
+
+## Future work
+
+In this exploratory and descriptive work, I have analyzed the ideological dimension of State of the Union speeches in Chile. My study suggest speeches from the two main coalitions are different ideologically. Yet, I have not looked at the relationship between ideology and partisanship. I have also not answered whether speeches have become more or less similar in ideology across time. To conduct this other analysis, I would need speeches from the different coalitions from the same year.
+
+This Summer, I will go to Chile for fieldwork. Among other things, I will gather campaign speeches from presidential candidates from the two coalitions in every presidential election between 1990 and 2021. Once I have collected these speeches, I will replicate the analysis using the new corpus. This way, I would be able to assess whether coalitions moved together over time.
+
+Alternative texts that I could use are party manifestos and legislative speeches. The problem with party manifestos is that the literature argues that, unlike in Europe, in Latin America they are not as useful to analyze ideology. The challenge I encountered with legislative speeches is that online documents containing them change structure across documents and across time. Legislative projects and speakers are not identifiable with a uniform structure.
+
+If I find out a way to work with legislative speeches, I will conduct a study where each intervention made by a Senator in a given Senate session is the unit of analysis. My measurement strategy would be to use the accuracy of machine classifiers (the proportion of correct predictions of the Senator’s coalition in a year/legislative period). The labels would be the coalitions of Senators, predicted from their speeches. When the learner discriminates members well, the period would be one of high polarization. When accuracy of the classifier is low, polarization would be low. I would use different classifiers in my analysis.
