@@ -27,3 +27,4 @@ year <- year[1:32]
 
 ## Store text from all speeches 
 speeches <- lapply(url, pdftools::pdf_text)
+
